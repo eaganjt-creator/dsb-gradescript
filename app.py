@@ -1,5 +1,9 @@
 import os
 import io
+import json
+import re
+import time
+from datetime import datetime
 import pandas as pd
 import streamlit as st
 from PIL import Image
@@ -12,7 +16,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Daniels School of Business Visual Styling
+# Purdue Daniels Styling
 st.markdown("""
     <style>
     :root {
@@ -39,6 +43,24 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# ----------------- IN-MEMORY DEVICE BRIDGE -----------------
+# Acts as a real-time data relay between phone and laptop
+@st.cache_resource
+def get_shared_sessions():
+    return {}
+
+shared_sessions = get_shared_sessions()
+
+def optimize_image(image: Image.Image, max_dim: int = 1600) -> Image.Image:
+    if image.mode in ("RGBA", "P"):
+        image = image.convert("RGB")
+    width, height = image.size
+    if max(width, height) > max_dim:
+        scale = max_dim / float(max(width, height))
+        new_size = (int(width * scale), int(height * scale))
+        image = image.resize(new_size, Image.Resampling.LANCZOS)
+    return image
+
 # ----------------- ACCESS CONTROL GATE -----------------
 def check_password():
     expected_password = st.secrets.get("APP_PASSWORD", "")
@@ -53,7 +75,6 @@ def check_password():
 
     st.markdown("<h2 class='main-header'>Daniels School of Business | DSB GradeScript</h2>", unsafe_allow_html=True)
     st.info("🔒 Restricted to Daniels School of Business faculty and authorized graders.")
-    
     pwd_input = st.text_input("Enter Access Password", type="password")
     if st.button("Log In"):
         if pwd_input == expected_password:
@@ -67,20 +88,6 @@ if not check_password():
     st.stop()
 # --------------------------------------------------------
 
-# Initialize Session Logs & Answer Key Storage
-if "grading_log" not in st.session_state:
-    st.session_state.grading_log = []
-if "pinned_key_data" not in st.session_state:
-    st.session_state.pinned_key_data = None
-if "pinned_key_name" not in st.session_state:
-    st.session_state.pinned_key_name = ""
-if "pinned_key_type" not in st.session_state:
-    st.session_state.pinned_key_type = ""
-
-# Header
-st.markdown("<h1 class='main-header'>DSB GradeScript</h1>", unsafe_allow_html=True)
-st.caption("Daniels School of Business | Multi-Page Handwritten Exam Evaluation Engine")
-
 MODEL_NAME = "gemini-3.6-flash"
 api_key = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", ""))
 
@@ -88,256 +95,297 @@ if not api_key:
     st.error("Configuration Error: GEMINI_API_KEY is not defined in Streamlit Secrets.")
     st.stop()
 
-# Sidebar: Controls, Flags & Audit Log Export
-with st.sidebar:
-    st.subheader("Grading Controls")
-    strictness = st.selectbox(
-        "Scoring Strictness",
-        [
-            "Strict (Penalize missing account/tax labels & omitted units)",
-            "Standard (Deduct for numerical error; minor deduction for label format)",
-            "Lenient (Focus primarily on mathematical accuracy)"
-        ]
-    )
-    
-    st.divider()
-    pin_prompts = st.checkbox(
-        "📌 Pin Question, Rubric & Key", 
-        value=True, 
-        help="Retains the text rubric, prompt, and uploaded answer key across multiple student evaluations."
-    )
-    flag_for_review = st.checkbox(
-        "🚩 Flag for Faculty Review", 
-        value=False, 
-        help="Marks this submission in the session audit log for ambiguous handwriting or edge cases."
-    )
-    
-    st.divider()
-    st.subheader("Session Audit Log")
-    if st.session_state.grading_log:
-        df_log = pd.DataFrame(st.session_state.grading_log)
-        st.dataframe(df_log[["Student ID", "Final Score", "Flagged"]], hide_index=True)
-        csv_data = df_log.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="📥 Download Session CSV",
-            data=csv_data,
-            file_name="dsb_gradescript_session_log.csv",
-            mime="text/csv",
-            use_container_width=True
+# Device Mode Selector
+device_mode = st.sidebar.radio(
+    "Device Mode",
+    ["💻 Laptop (Cockpit & Evaluator)", "📱 Mobile (Scanner Companion)"],
+    index=0
+)
+
+# ==============================================================================
+# 📱 MOBILE SCANNER COMPANION MODE
+# ==============================================================================
+if device_mode == "📱 Mobile (Scanner Companion)":
+    st.markdown("<h2 class='main-header'>📱 Mobile Scanner</h2>", unsafe_allow_html=True)
+    st.caption("Snap exam pages and beam them directly to your laptop cockpit.")
+
+    room_code = st.text_input("Enter 4-Digit Session Code", max_chars=4, placeholder="e.g., 1042").strip()
+    student_id = st.text_input("Student Identifier (Optional)", placeholder="Leave blank if written on exam")
+
+    if "mobile_pages" not in st.session_state:
+        st.session_state.mobile_pages = []
+
+    cam_shot = st.camera_input("Snap Exam Page")
+    if cam_shot:
+        img = Image.open(cam_shot)
+        img = optimize_image(img)
+        if st.button("➕ Add This Page"):
+            st.session_state.mobile_pages.append(img)
+            st.success(f"Page {len(st.session_state.mobile_pages)} added!")
+            st.rerun()
+
+    if st.session_state.mobile_pages:
+        st.info(f"{len(st.session_state.mobile_pages)} page(s) ready to transmit.")
+        
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            if st.button("🚀 Send to Laptop", use_container_width=True):
+                if not room_code:
+                    st.error("Please enter the 4-digit code shown on your laptop.")
+                else:
+                    shared_sessions[room_code] = {
+                        "student_id": student_id,
+                        "pages": list(st.session_state.mobile_pages),
+                        "timestamp": time.time(),
+                        "processed": False
+                    }
+                    st.session_state.mobile_pages = []
+                    st.success("Sent! Your laptop is now processing this exam.")
+                    st.rerun()
+        with col_m2:
+            if st.button("🗑️ Clear Pages", use_container_width=True):
+                st.session_state.mobile_pages = []
+                st.rerun()
+
+# ==============================================================================
+# 💻 LAPTOP COCKPIT MODE
+# ==============================================================================
+else:
+    st.markdown("<h1 class='main-header'>DSB GradeScript</h1>", unsafe_allow_html=True)
+    st.caption("Daniels School of Business | Multi-Page Handwritten Exam Cockpit")
+
+    if "grading_log" not in st.session_state:
+        st.session_state.grading_log = []
+    if "session_code" not in st.session_state:
+        import random
+        st.session_state.session_code = str(random.randint(1000, 9999))
+    if "pinned_key_data" not in st.session_state:
+        st.session_state.pinned_key_data = None
+        st.session_state.pinned_key_name = ""
+        st.session_state.pinned_key_type = ""
+
+    # Sidebar: Controls & Live Gradebook
+    with st.sidebar:
+        st.subheader("Mobile Link Code")
+        st.metric(label="Pairing PIN", value=st.session_state.session_code)
+        st.caption("Open this app on your phone, choose 'Mobile' mode, and type this PIN.")
+        
+        st.divider()
+        strictness = st.selectbox(
+            "Scoring Strictness",
+            [
+                "Strict (Penalize missing account/tax labels & omitted units)",
+                "Standard (Deduct for numerical error; minor deduction for label format)",
+                "Lenient (Focus primarily on mathematical accuracy)"
+            ]
         )
-    else:
-        st.caption("No submissions recorded in this session yet.")
+        flag_for_review = st.checkbox("🚩 Flag for Faculty Review", value=False)
+        
+        st.divider()
+        st.subheader("Session Gradebook")
+        if st.session_state.grading_log:
+            df_log = pd.DataFrame(st.session_state.grading_log)
+            st.dataframe(df_log[["OrgDefinedId", "Score", "Flagged"]], hide_index=True)
+            csv_data = df_log.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="📥 Download Master CSV",
+                data=csv_data,
+                file_name=f"dsb_gradescript_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        else:
+            st.caption("No submissions recorded yet.")
 
-    st.divider()
-    if st.button("Log Out"):
-        st.session_state.authenticated = False
-        st.rerun()
+        st.divider()
+        if st.button("Log Out"):
+            st.session_state.authenticated = False
+            st.rerun()
 
-# Layout: Rubric/Answer Key vs. Student Submission
-col1, col2 = st.columns([1, 1])
+    # Cockpit Body: Rubric Setup (Left) vs. Live Queue & Grader (Right)
+    col1, col2 = st.columns([1, 1])
 
-with col1:
-    st.subheader("1. Problem, Rubric & Master Key")
-    
-    default_prompt = st.session_state.get("saved_prompt", "") if pin_prompts else ""
-    default_rubric = st.session_state.get("saved_rubric", "") if pin_prompts else ""
-
-    exam_prompt = st.text_area(
-        "Exam Problem Statement",
-        value=default_prompt,
-        height=110,
-        placeholder="Enter problem context, given facts, or starting trial balance..."
-    )
-    rubric_text = st.text_area(
-        "Itemized Rubric / Deduction Rules",
-        value=default_rubric,
-        height=180,
-        placeholder="""Define point allocation and deduction rules:
-- Part A (4 pts): 2 pts for depreciation base, 2 pts for expense calculation.
-- Part B (4 pts): Correct journal entry accounts & labels (Debit/Credit).
-- Part C (2 pts): Net tax impact.
-- Deduction: -1 pt for missing labels/units even if numbers match."""
-    )
-
-    if pin_prompts:
+    with col1:
+        st.subheader("1. Problem, Rubric & Master Key")
+        exam_prompt = st.text_area(
+            "Exam Problem Statement",
+            value=st.session_state.get("saved_prompt", ""),
+            height=120,
+            placeholder="Enter problem context, trial balance, or prompt..."
+        )
+        rubric_text = st.text_area(
+            "Itemized Rubric / Deduction Rules",
+            value=st.session_state.get("saved_rubric", ""),
+            height=180,
+            placeholder="Define point breakdown and penalty rules..."
+        )
         st.session_state["saved_prompt"] = exam_prompt
         st.session_state["saved_rubric"] = rubric_text
 
-    st.markdown("##### Upload Official Answer Key (Optional)")
-    
-    # Check if a key is already pinned in the session
-    if st.session_state.pinned_key_data is not None:
-        st.success(f"📌 **Pinned Key Active:** `{st.session_state.pinned_key_name}`")
-        if st.button("Clear Pinned Answer Key"):
-            st.session_state.pinned_key_data = None
-            st.session_state.pinned_key_name = ""
-            st.session_state.pinned_key_type = ""
-            st.rerun()
-    else:
-        key_file = st.file_uploader(
-            "Upload Master Key (PDF or Image)", 
-            type=["pdf", "png", "jpg", "jpeg"],
-            key="key_uploader"
-        )
-        if key_file:
-            key_bytes = key_file.read()
-            st.session_state.pinned_key_data = key_bytes
-            st.session_state.pinned_key_name = key_file.name
-            st.session_state.pinned_key_type = "pdf" if key_file.name.lower().endswith(".pdf") else "image"
-            st.success(f"Loaded: {key_file.name}")
-            st.rerun()
+        st.markdown("##### Master Answer Key (Optional)")
+        if st.session_state.pinned_key_data is not None:
+            st.success(f"📌 **Pinned Key:** `{st.session_state.pinned_key_name}`")
+            if st.button("Clear Master Key"):
+                st.session_state.pinned_key_data = None
+                st.session_state.pinned_key_name = ""
+                st.session_state.pinned_key_type = ""
+                st.rerun()
+        else:
+            key_file = st.file_uploader("Upload Solution Key (PDF or Image)", type=["pdf", "png", "jpg", "jpeg"])
+            if key_file:
+                st.session_state.pinned_key_data = key_file.read()
+                st.session_state.pinned_key_name = key_file.name
+                st.session_state.pinned_key_type = "pdf" if key_file.name.lower().endswith(".pdf") else "image"
+                st.rerun()
 
-with col2:
-    st.subheader("2. Multi-Page Student Submission")
-    student_id = st.text_input("Student Identifier", placeholder="e.g., Student 104 or Purdue Username")
-    upload_type = st.radio("Submission Format", ["Multiple Image Files (JPG/PNG)", "Single Multi-Page PDF"], horizontal=True)
-    
-    uploaded_pages = []
-    
-    if upload_type == "Multiple Image Files (JPG/PNG)":
-        files = st.file_uploader(
-            "Upload pages in chronological order",
-            type=["png", "jpg", "jpeg"],
-            accept_multiple_files=True
-        )
-        if files:
-            for file in files:
-                img = Image.open(file)
-                uploaded_pages.append(img)
-            st.info(f"{len(uploaded_pages)} page(s) loaded.")
-    else:
-        pdf_file = st.file_uploader("Upload Student PDF", type=["pdf"])
-        if pdf_file:
-            pdf_bytes = pdf_file.read()
-            uploaded_pages = [
-                types.Part.from_bytes(
-                    data=pdf_bytes,
-                    mime_type="application/pdf"
-                )
-            ]
-            st.info("Multi-page PDF loaded and prepared for vision evaluation.")
+    with col2:
+        st.subheader("2. Incoming Mobile Queue")
+        curr_code = st.session_state.session_code
+        mobile_data = shared_sessions.get(curr_code)
 
-    if uploaded_pages and upload_type == "Multiple Image Files (JPG/PNG)":
-        with st.expander("Preview Uploaded Student Pages", expanded=False):
-            cols = st.columns(min(len(uploaded_pages), 3))
-            for i, img in enumerate(uploaded_pages):
-                cols[i % 3].image(img, caption=f"Page {i+1}", use_container_width=True)
+        pages_to_grade = []
+        incoming_student = ""
 
-st.divider()
-
-# Evaluation Run
-if st.button("Evaluate Multi-Page Submission", use_container_width=True):
-    if not rubric_text and not st.session_state.pinned_key_data:
-        st.warning("Please provide either an itemized rubric or an uploaded answer key.")
-    elif not uploaded_pages:
-        st.warning("Please upload student work (PDF or page images).")
-    else:
-        with st.spinner("Analyzing multi-page handwriting, comparing against master key, and tallying points..."):
-            client = genai.Client(api_key=api_key)
-
-            system_instruction = f"""
-            You are DSB GradeScript, an objective, rigorous exam evaluator for the Daniels School of Business.
-            You are evaluating a multi-page handwritten student submission.
-
-            Grading Policy:
-            - Strictness Level: {strictness}
-            - Student ID: {student_id if student_id else 'Unspecified'}
+        if mobile_data and not mobile_data.get("processed", False):
+            incoming_student = mobile_data.get("student_id", "")
+            pages_to_grade = mobile_data.get("pages", [])
+            st.success(f"📥 Received {len(pages_to_grade)} page(s) from phone! (Student: {incoming_student or 'Detecting...'})")
             
-            Key Directives:
-            1. Track work across multiple pages sequentially. Work may begin on Page 1 and conclude on subsequent pages.
-            2. Fully transcribe the student's handwritten calculations, steps, and schedules.
-            3. Compare against the provided itemized rubric AND any uploaded Master Answer Key document.
-            4. Check both numerical accuracy AND required formatting (e.g., account titles, debit/credit placements, tax schedules).
-            5. If labels or units are absent where required by the rubric or key, apply deductions strictly.
-            6. Provide an itemized breakdown followed by a clean summary formatted for quick LMS pasting.
-            """
+            p_cols = st.columns(min(len(pages_to_grade), 3))
+            for i, p_img in enumerate(pages_to_grade):
+                p_cols[i % 3].image(p_img, caption=f"Page {i+1}", use_container_width=True)
 
-            content_payload = []
+            run_eval = st.button("🚀 Evaluate Submission from Phone", use_container_width=True)
+        else:
+            st.info(f"Waiting for scans from mobile companion (PIN: **{curr_code}**)...")
+            st.caption("Or upload a local PDF/Images manually below:")
+            manual_file = st.file_uploader("Manual File Upload", type=["pdf", "png", "jpg", "jpeg"], key="manual_up")
+            run_eval = False
+            if manual_file:
+                if manual_file.name.lower().endswith(".pdf"):
+                    pages_to_grade = [types.Part.from_bytes(data=manual_file.read(), mime_type="application/pdf")]
+                else:
+                    pages_to_grade = [optimize_image(Image.open(manual_file))]
+                run_eval = st.button("Evaluate Manual Upload", use_container_width=True)
 
-            # 1. Master Answer Key (if uploaded/pinned)
-            if st.session_state.pinned_key_data is not None:
-                content_payload.append("=== OFFICIAL MASTER ANSWER KEY DOCUMENT ===")
-                if st.session_state.pinned_key_type == "pdf":
-                    content_payload.append(
-                        types.Part.from_bytes(
-                            data=st.session_state.pinned_key_data,
-                            mime_type="application/pdf"
+    # Execution Engine
+    if run_eval and pages_to_grade:
+        if not rubric_text and not st.session_state.pinned_key_data:
+            st.warning("Please provide a rubric or upload a master key.")
+        else:
+            with st.spinner("Deciphering handwriting, applying rubric, and tallying points..."):
+                client = genai.Client(api_key=api_key)
+
+                system_instruction = f"""
+                You are DSB GradeScript, an objective, rigorous exam evaluator for the Daniels School of Business.
+                Evaluate this multi-page handwritten student exam.
+                
+                Grading Policy:
+                - Strictness Level: {strictness}
+                
+                Key Directives:
+                1. Track work across multiple pages sequentially.
+                2. Transcribe key steps and verify mathematical calculations and accounting/tax labels.
+                3. Search Page 1 header for Student ID or Name.
+                4. Output Markdown scorecard followed strictly by this JSON block:
+                   ```json
+                   {{
+                     "student_id": "Extracted ID or 'Unspecified'",
+                     "points_earned": 8.5,
+                     "points_possible": 10.0,
+                     "feedback_summary": "1-2 sentence overview of slips or missing labels"
+                   }}
+                   ```
+                """
+
+                content_payload = []
+                if st.session_state.pinned_key_data is not None:
+                    content_payload.append("=== MASTER ANSWER KEY DOCUMENT ===")
+                    if st.session_state.pinned_key_type == "pdf":
+                        content_payload.append(types.Part.from_bytes(data=st.session_state.pinned_key_data, mime_type="application/pdf"))
+                    else:
+                        content_payload.append(optimize_image(Image.open(io.BytesIO(st.session_state.pinned_key_data))))
+
+                content_payload.append("=== STUDENT SUBMISSION ===")
+                for page in pages_to_grade:
+                    content_payload.append(page)
+
+                content_payload.append(f"""
+                === PROBLEM STATEMENT ===
+                {exam_prompt}
+
+                === ITEMIZED RUBRIC & CRITERIA ===
+                {rubric_text}
+                """)
+
+                try:
+                    response = client.models.generate_content(
+                        model=MODEL_NAME,
+                        contents=content_payload,
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_instruction,
+                            temperature=0.1
                         )
                     )
-                else:
-                    key_img = Image.open(io.BytesIO(st.session_state.pinned_key_data))
-                    content_payload.append(key_img)
 
-            # 2. Student Submission
-            content_payload.append("=== STUDENT SUBMISSION ===")
-            for page in uploaded_pages:
-                content_payload.append(page)
+                    eval_text = response.text
+                    extracted_id = incoming_student if incoming_student else "Unspecified"
+                    score_val = ""
+                    
+                    json_match = re.search(r"```json\s*(\{.*?\})\s*```", eval_text, re.DOTALL)
+                    if json_match:
+                        try:
+                            parsed = json.loads(json_match.group(1))
+                            if not incoming_student and parsed.get("student_id") not in ("Unspecified", ""):
+                                extracted_id = str(parsed.get("student_id"))
+                            e = parsed.get("points_earned", "")
+                            p = parsed.get("points_possible", "")
+                            score_val = f"{e}/{p}" if e != "" and p != "" else str(e)
+                        except Exception:
+                            pass
 
-            # 3. Problem Prompt & Rubric Instructions
-            content_payload.append(f"""
-            === PROBLEM STATEMENT ===
-            {exam_prompt}
+                    st.session_state["latest_eval"] = eval_text
+                    st.session_state["current_student"] = extracted_id
+                    st.session_state["current_score"] = score_val
 
-            === ITEMIZED RUBRIC & CRITERIA ===
-            {rubric_text}
+                    # Mark mobile packet as processed
+                    if curr_code in shared_sessions:
+                        shared_sessions[curr_code]["processed"] = True
 
-            Please output your evaluation strictly using this layout:
-            ### TRANSCRIPTION
-            [Brief page-by-page extraction of student work]
+                except Exception as e:
+                    st.error(f"Evaluation error: {str(e)}")
 
-            ### SCORECARD
-            | Component | Points Possible | Points Earned | Deduction Details |
-            |---|---|---|---|
-            [Populate rows]
+    # Evaluation Output & Master Reconciliation
+    if "latest_eval" in st.session_state:
+        st.divider()
+        st.subheader(f"Evaluation Report: {st.session_state.get('current_student', 'Student')}")
+        
+        display_md = re.sub(r"```json\s*\{.*?\}\s*```", "", st.session_state["latest_eval"], flags=re.DOTALL)
+        st.markdown(display_md)
 
-            ### SUMMARY FEEDBACK
-            **Total Score:** [Earned] / [Possible]
-            **Feedback:** [Concise, direct feedback highlighting arithmetic slips vs. terminology/label omissions]
-            """)
-
-            try:
-                response = client.models.generate_content(
-                    model=MODEL_NAME,
-                    contents=content_payload,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_instruction,
-                        temperature=0.1
-                    )
-                )
-
-                eval_text = response.text
-                st.session_state["latest_eval"] = eval_text
-                st.session_state["current_student"] = student_id if student_id else "Unspecified"
-
-            except Exception as e:
-                st.error(f"Evaluation error: {str(e)}")
-
-# Display Evaluation & Review Actions
-if "latest_eval" in st.session_state:
-    st.subheader(f"Evaluation Report: {st.session_state.get('current_student', 'Student')}")
-    st.markdown(st.session_state["latest_eval"])
-    
-    st.divider()
-    st.subheader("Grader Actions & LMS Feedback Bundle")
-    
-    feedback_bundle = st.text_area(
-        "Copyable LMS Feedback Block",
-        value=st.session_state["latest_eval"],
-        height=180
-    )
-    
-    action_col1, action_col2 = st.columns([1, 1])
-    with action_col1:
-        final_score_input = st.text_input("Confirm Final Score (e.g., 8.5/10)", key="final_score_record")
-    with action_col2:
-        st.write("")
-        st.write("")
-        if st.button("Log to Session Audit"):
-            st.session_state.grading_log.append({
-                "Student ID": st.session_state.get("current_student", "Unspecified"),
-                "Final Score": final_score_input,
-                "Flagged": "YES" if flag_for_review else "NO",
-                "Feedback": feedback_bundle
-            })
-            st.success(f"Recorded evaluation for {st.session_state.get('current_student', 'Student')}!")
-            st.rerun()
+        st.divider()
+        st.subheader("Reconcile & Append to Master Gradebook")
+        
+        rec_col1, rec_col2, rec_col3 = st.columns([1.5, 1.5, 2])
+        with rec_col1:
+            confirmed_id = st.text_input("Confirm Student ID (OrgDefinedId)", value=st.session_state.get("current_student", ""))
+        with rec_col2:
+            confirmed_score = st.text_input("Score", value=st.session_state.get("current_score", ""))
+        with rec_col3:
+            st.write("")
+            st.write("")
+            if st.button("✅ Append to Gradebook & Next", use_container_width=True):
+                st.session_state.grading_log.append({
+                    "OrgDefinedId": confirmed_id,
+                    "Score": confirmed_score,
+                    "Flagged": "YES" if flag_for_review else "NO",
+                    "Feedback": display_md.strip(),
+                    "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                })
+                # Clear evaluated buffer
+                if curr_code in shared_sessions:
+                    del shared_sessions[curr_code]
+                if "latest_eval" in st.session_state:
+                    del st.session_state["latest_eval"]
+                st.success(f"Logged {confirmed_id}! Ready for next student.")
+                st.rerun()
