@@ -3,10 +3,12 @@ import io
 import json
 import re
 import time
+import random
 from datetime import datetime
 import pandas as pd
 import streamlit as st
 from PIL import Image
+import qrcode
 from google import genai
 from google.genai import types
 
@@ -16,7 +18,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Purdue Daniels Styling
+# Daniels School of Business Visual Styling
 st.markdown("""
     <style>
     :root {
@@ -43,8 +45,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# ----------------- IN-MEMORY DEVICE BRIDGE -----------------
-# Acts as a real-time data relay between phone and laptop
+# ----------------- IN-MEMORY DEVICE RELAY -----------------
 @st.cache_resource
 def get_shared_sessions():
     return {}
@@ -95,11 +96,16 @@ if not api_key:
     st.error("Configuration Error: GEMINI_API_KEY is not defined in Streamlit Secrets.")
     st.stop()
 
-# Device Mode Selector
+# Auto-detect Mode from QR code query parameters if present
+query_mode = st.query_params.get("mode", "")
+query_session = st.query_params.get("session", "")
+
+default_mode_index = 1 if query_mode == "mobile" else 0
+
 device_mode = st.sidebar.radio(
     "Device Mode",
     ["💻 Laptop (Cockpit & Evaluator)", "📱 Mobile (Scanner Companion)"],
-    index=0
+    index=default_mode_index
 )
 
 # ==============================================================================
@@ -109,7 +115,13 @@ if device_mode == "📱 Mobile (Scanner Companion)":
     st.markdown("<h2 class='main-header'>📱 Mobile Scanner</h2>", unsafe_allow_html=True)
     st.caption("Snap exam pages and beam them directly to your laptop cockpit.")
 
-    room_code = st.text_input("Enter 4-Digit Session Code", max_chars=4, placeholder="e.g., 1042").strip()
+    room_code = st.text_input(
+        "4-Digit Session Code", 
+        value=query_session, 
+        max_chars=4, 
+        placeholder="e.g., 1042"
+    ).strip()
+    
     student_id = st.text_input("Student Identifier (Optional)", placeholder="Leave blank if written on exam")
 
     if "mobile_pages" not in st.session_state:
@@ -125,13 +137,13 @@ if device_mode == "📱 Mobile (Scanner Companion)":
             st.rerun()
 
     if st.session_state.mobile_pages:
-        st.info(f"{len(st.session_state.mobile_pages)} page(s) ready to transmit.")
+        st.info(f"{len(st.session_state.mobile_pages)} page(s) buffered.")
         
         col_m1, col_m2 = st.columns(2)
         with col_m1:
             if st.button("🚀 Send to Laptop", use_container_width=True):
                 if not room_code:
-                    st.error("Please enter the 4-digit code shown on your laptop.")
+                    st.error("Please enter or scan the 4-digit code shown on your laptop.")
                 else:
                     shared_sessions[room_code] = {
                         "student_id": student_id,
@@ -140,7 +152,7 @@ if device_mode == "📱 Mobile (Scanner Companion)":
                         "processed": False
                     }
                     st.session_state.mobile_pages = []
-                    st.success("Sent! Your laptop is now processing this exam.")
+                    st.success("Transmitted! Your laptop is now analyzing this exam.")
                     st.rerun()
         with col_m2:
             if st.button("🗑️ Clear Pages", use_container_width=True):
@@ -157,19 +169,30 @@ else:
     if "grading_log" not in st.session_state:
         st.session_state.grading_log = []
     if "session_code" not in st.session_state:
-        import random
         st.session_state.session_code = str(random.randint(1000, 9999))
     if "pinned_key_data" not in st.session_state:
         st.session_state.pinned_key_data = None
         st.session_state.pinned_key_name = ""
         st.session_state.pinned_key_type = ""
 
-    # Sidebar: Controls & Live Gradebook
+    # Sidebar: Controls, QR Pairing & Gradebook
     with st.sidebar:
-        st.subheader("Mobile Link Code")
+        st.subheader("Mobile Link")
         st.metric(label="Pairing PIN", value=st.session_state.session_code)
-        st.caption("Open this app on your phone, choose 'Mobile' mode, and type this PIN.")
         
+        # QR Code Generation
+        base_app_url = st.secrets.get("APP_URL", "https://dsb-gradescript.streamlit.app")
+        pair_url = f"{base_app_url}/?mode=mobile&session={st.session_state.session_code}"
+        
+        qr = qrcode.QRCode(box_size=3, border=1)
+        qr.add_data(pair_url)
+        qr.make(fit=True)
+        qr_img = qr.make_image(fill_color="black", back_color="white")
+        
+        buf = io.BytesIO()
+        qr_img.save(buf, format="PNG")
+        st.image(buf.getvalue(), caption="Scan to Pair Phone", width=140)
+
         st.divider()
         strictness = st.selectbox(
             "Scoring Strictness",
@@ -202,7 +225,7 @@ else:
             st.session_state.authenticated = False
             st.rerun()
 
-    # Cockpit Body: Rubric Setup (Left) vs. Live Queue & Grader (Right)
+    # Cockpit Body: Rubric Setup vs. Live Ingestion Queue
     col1, col2 = st.columns([1, 1])
 
     with col1:
@@ -217,7 +240,7 @@ else:
             "Itemized Rubric / Deduction Rules",
             value=st.session_state.get("saved_rubric", ""),
             height=180,
-            placeholder="Define point breakdown and penalty rules..."
+            placeholder="Define point breakdown and deduction rules..."
         )
         st.session_state["saved_prompt"] = exam_prompt
         st.session_state["saved_rubric"] = rubric_text
@@ -258,7 +281,7 @@ else:
             run_eval = st.button("🚀 Evaluate Submission from Phone", use_container_width=True)
         else:
             st.info(f"Waiting for scans from mobile companion (PIN: **{curr_code}**)...")
-            st.caption("Or upload a local PDF/Images manually below:")
+            st.caption("Or upload a local PDF/Images directly below:")
             manual_file = st.file_uploader("Manual File Upload", type=["pdf", "png", "jpg", "jpeg"], key="manual_up")
             run_eval = False
             if manual_file:
@@ -268,7 +291,7 @@ else:
                     pages_to_grade = [optimize_image(Image.open(manual_file))]
                 run_eval = st.button("Evaluate Manual Upload", use_container_width=True)
 
-    # Execution Engine
+    # Evaluation Execution Pipeline
     if run_eval and pages_to_grade:
         if not rubric_text and not st.session_state.pinned_key_data:
             st.warning("Please provide a rubric or upload a master key.")
@@ -348,14 +371,13 @@ else:
                     st.session_state["current_student"] = extracted_id
                     st.session_state["current_score"] = score_val
 
-                    # Mark mobile packet as processed
                     if curr_code in shared_sessions:
                         shared_sessions[curr_code]["processed"] = True
 
                 except Exception as e:
                     st.error(f"Evaluation error: {str(e)}")
 
-    # Evaluation Output & Master Reconciliation
+    # Evaluation Output & Reconciliation
     if "latest_eval" in st.session_state:
         st.divider()
         st.subheader(f"Evaluation Report: {st.session_state.get('current_student', 'Student')}")
@@ -382,6 +404,7 @@ else:
                     "Feedback": display_md.strip(),
                     "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 })
+                
                 # Clear evaluated buffer
                 if curr_code in shared_sessions:
                     del shared_sessions[curr_code]
