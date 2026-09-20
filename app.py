@@ -18,12 +18,13 @@ st.set_page_config(
     layout="wide"
 )
 
-# Daniels School of Business Visual Styling
+# Daniels School of Business Styling & Mobile Button Enlargement
 st.markdown("""
     <style>
     :root {
         --purdue-gold: #C28E0E;
         --purdue-black: #000000;
+        --purdue-gray: #373A36;
     }
     .main-header {
         border-bottom: 3px solid #C28E0E;
@@ -35,12 +36,27 @@ st.markdown("""
         color: #C28E0E;
         border: 2px solid #C28E0E;
         font-weight: 600;
-        border-radius: 4px;
-        padding: 0.5rem 1rem;
+        border-radius: 6px;
+        padding: 0.6rem 1.2rem;
     }
     .stButton>button:hover {
         background-color: #C28E0E;
         color: #000000;
+    }
+    /* Mobile-Specific Enhancements: Large tap targets for phone scanner */
+    @media (max-width: 768px) {
+        .stButton>button {
+            width: 100% !important;
+            min-height: 56px !important;
+            font-size: 1.15rem !important;
+            margin-top: 8px !important;
+            margin-bottom: 8px !important;
+            border-radius: 8px !important;
+        }
+        .stTextInput input {
+            font-size: 1.1rem !important;
+            min-height: 48px !important;
+        }
     }
     </style>
 """, unsafe_allow_html=True)
@@ -96,10 +112,9 @@ if not api_key:
     st.error("Configuration Error: GEMINI_API_KEY is not defined in Streamlit Secrets.")
     st.stop()
 
-# Auto-detect Mode from QR code query parameters if present
+# Query param handling
 query_mode = st.query_params.get("mode", "")
 query_session = st.query_params.get("session", "")
-
 default_mode_index = 1 if query_mode == "mobile" else 0
 
 device_mode = st.sidebar.radio(
@@ -112,11 +127,11 @@ device_mode = st.sidebar.radio(
 # 📱 MOBILE SCANNER COMPANION MODE
 # ==============================================================================
 if device_mode == "📱 Mobile (Scanner Companion)":
-    st.markdown("<h2 class='main-header'>📱 Mobile Scanner</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 class='main-header'>📱 Mobile Scanner Companion</h2>", unsafe_allow_html=True)
     st.caption("Snap exam pages and beam them directly to your laptop cockpit.")
 
     room_code = st.text_input(
-        "4-Digit Session Code", 
+        "Session PIN", 
         value=query_session, 
         max_chars=4, 
         placeholder="e.g., 1042"
@@ -127,37 +142,52 @@ if device_mode == "📱 Mobile (Scanner Companion)":
     if "mobile_pages" not in st.session_state:
         st.session_state.mobile_pages = []
 
-    cam_shot = st.camera_input("Snap Exam Page")
-    if cam_shot:
-        img = Image.open(cam_shot)
-        img = optimize_image(img)
-        if st.button("➕ Add This Page"):
-            st.session_state.mobile_pages.append(img)
-            st.success(f"Page {len(st.session_state.mobile_pages)} added!")
-            st.rerun()
+    st.markdown("#### Capture Method")
+    cam_type = st.radio(
+        "Camera Type",
+        ["📸 Native Phone Camera (Enables Hardware Flash/Torch)", "🌐 In-Browser Webcam"],
+        help="Use Native Phone Camera to turn on your phone's LED flash and eliminate shadows on the paper."
+    )
+
+    if "Native Phone Camera" in cam_type:
+        st.caption("💡 *Tip: Tapping below opens your phone's native camera. Enable flash in camera options to kill paper shadows.*")
+        uploaded_shot = st.file_uploader("Snap / Upload Page", type=["jpg", "jpeg", "png"], key="native_cam")
+        if uploaded_shot:
+            if st.button("➕ Confirm & Add This Page", use_container_width=True):
+                img = Image.open(uploaded_shot)
+                st.session_state.mobile_pages.append(optimize_image(img))
+                st.success(f"Page {len(st.session_state.mobile_pages)} saved!")
+                st.rerun()
+    else:
+        cam_shot = st.camera_input("Snap Exam Page")
+        if cam_shot:
+            img = Image.open(cam_shot)
+            img = optimize_image(img)
+            if st.button("➕ Add This Page", use_container_width=True):
+                st.session_state.mobile_pages.append(img)
+                st.success(f"Page {len(st.session_state.mobile_pages)} added!")
+                st.rerun()
 
     if st.session_state.mobile_pages:
-        st.info(f"{len(st.session_state.mobile_pages)} page(s) buffered.")
+        st.info(f"📄 {len(st.session_state.mobile_pages)} page(s) ready for this student.")
         
-        col_m1, col_m2 = st.columns(2)
-        with col_m1:
-            if st.button("🚀 Send to Laptop", use_container_width=True):
-                if not room_code:
-                    st.error("Please enter or scan the 4-digit code shown on your laptop.")
-                else:
-                    shared_sessions[room_code] = {
-                        "student_id": student_id,
-                        "pages": list(st.session_state.mobile_pages),
-                        "timestamp": time.time(),
-                        "processed": False
-                    }
-                    st.session_state.mobile_pages = []
-                    st.success("Transmitted! Your laptop is now analyzing this exam.")
-                    st.rerun()
-        with col_m2:
-            if st.button("🗑️ Clear Pages", use_container_width=True):
+        if st.button("🚀 Beam to Laptop Cockpit", use_container_width=True):
+            if not room_code:
+                st.error("Please enter or scan the 4-digit code shown on your laptop.")
+            else:
+                shared_sessions[room_code] = {
+                    "student_id": student_id,
+                    "pages": list(st.session_state.mobile_pages),
+                    "timestamp": time.time(),
+                    "processed": False
+                }
                 st.session_state.mobile_pages = []
+                st.success("Transmitted! Head to your laptop cockpit to evaluate.")
                 st.rerun()
+
+        if st.button("🗑️ Clear Pages", use_container_width=True):
+            st.session_state.mobile_pages = []
+            st.rerun()
 
 # ==============================================================================
 # 💻 LAPTOP COCKPIT MODE
@@ -180,7 +210,6 @@ else:
         st.subheader("Mobile Link")
         st.metric(label="Pairing PIN", value=st.session_state.session_code)
         
-        # QR Code Generation
         base_app_url = st.secrets.get("APP_URL", "https://dsb-gradescript.streamlit.app")
         pair_url = f"{base_app_url}/?mode=mobile&session={st.session_state.session_code}"
         
@@ -191,7 +220,7 @@ else:
         
         buf = io.BytesIO()
         qr_img.save(buf, format="PNG")
-        st.image(buf.getvalue(), caption="Scan to Pair Phone", width=140)
+        st.image(buf.getvalue(), caption="Scan with Phone Camera", width=140)
 
         st.divider()
         strictness = st.selectbox(
@@ -202,19 +231,40 @@ else:
                 "Lenient (Focus primarily on mathematical accuracy)"
             ]
         )
-        flag_for_review = st.checkbox("🚩 Flag for Faculty Review", value=False)
+        flag_for_review = st.checkbox("🚩 Flag Current for Faculty Review", value=False)
         
         st.divider()
-        st.subheader("Session Gradebook")
+        st.subheader("Session Exports")
         if st.session_state.grading_log:
             df_log = pd.DataFrame(st.session_state.grading_log)
             st.dataframe(df_log[["OrgDefinedId", "Score", "Flagged"]], hide_index=True)
-            csv_data = df_log.to_csv(index=False).encode("utf-8")
+            
+            # Export 1: Brightspace CSV
+            csv_data = df_log[["OrgDefinedId", "Score", "Flagged", "Timestamp"]].to_csv(index=False).encode("utf-8")
             st.download_button(
-                label="📥 Download Master CSV",
+                label="📥 1. Gradebook CSV (LMS Import)",
                 data=csv_data,
-                file_name=f"dsb_gradescript_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                file_name=f"dsb_grades_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                 mime="text/csv",
+                use_container_width=True
+            )
+            
+            # Export 2: Comprehensive All-Student Audit Report
+            full_report_text = f"# DSB GradeScript - Session Evaluation Dossier\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            for row in st.session_state.grading_log:
+                full_report_text += f"## Student: {row['OrgDefinedId']}\n"
+                full_report_text += f"- **Score:** {row['Score']}\n"
+                full_report_text += f"- **Flagged:** {row['Flagged']}\n"
+                full_report_text += f"- **Timestamp:** {row['Timestamp']}\n\n"
+                full_report_text += "### Evaluation Details\n"
+                full_report_text += f"{row['Full_Feedback']}\n\n"
+                full_report_text += "---\n\n"
+
+            st.download_button(
+                label="📄 2. Complete Dossier (All Students)",
+                data=full_report_text.encode("utf-8"),
+                file_name=f"dsb_full_dossier_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+                mime="text/plain",
                 use_container_width=True
             )
         else:
@@ -262,7 +312,14 @@ else:
                 st.rerun()
 
     with col2:
-        st.subheader("2. Incoming Mobile Queue")
+        st.subheader("2. Incoming Submissions Queue")
+        
+        # Explicit refresh button to poll queue without touching dropdowns
+        poll_col1, poll_col2 = st.columns([1, 1])
+        with poll_col1:
+            if st.button("🔄 Refresh Incoming Queue", use_container_width=True):
+                st.rerun()
+
         curr_code = st.session_state.session_code
         mobile_data = shared_sessions.get(curr_code)
 
@@ -278,9 +335,9 @@ else:
             for i, p_img in enumerate(pages_to_grade):
                 p_cols[i % 3].image(p_img, caption=f"Page {i+1}", use_container_width=True)
 
-            run_eval = st.button("🚀 Evaluate Submission from Phone", use_container_width=True)
+            run_eval = st.button("🚀 Evaluate Submission", use_container_width=True)
         else:
-            st.info(f"Waiting for scans from mobile companion (PIN: **{curr_code}**)...")
+            st.info(f"Waiting for mobile companion (PIN: **{curr_code}**)...")
             st.caption("Or upload a local PDF/Images directly below:")
             manual_file = st.file_uploader("Manual File Upload", type=["pdf", "png", "jpg", "jpeg"], key="manual_up")
             run_eval = False
@@ -296,7 +353,7 @@ else:
         if not rubric_text and not st.session_state.pinned_key_data:
             st.warning("Please provide a rubric or upload a master key.")
         else:
-            with st.spinner("Deciphering handwriting, applying rubric, and tallying points..."):
+            with st.spinner("Deciphering handwriting, applying rubric, and standardizing evaluation..."):
                 client = genai.Client(api_key=api_key)
 
                 system_instruction = f"""
@@ -306,19 +363,31 @@ else:
                 Grading Policy:
                 - Strictness Level: {strictness}
                 
-                Key Directives:
-                1. Track work across multiple pages sequentially.
-                2. Transcribe key steps and verify mathematical calculations and accounting/tax labels.
-                3. Search Page 1 header for Student ID or Name.
-                4. Output Markdown scorecard followed strictly by this JSON block:
-                   ```json
-                   {{
-                     "student_id": "Extracted ID or 'Unspecified'",
-                     "points_earned": 8.5,
-                     "points_possible": 10.0,
-                     "feedback_summary": "1-2 sentence overview of slips or missing labels"
-                   }}
-                   ```
+                You MUST format your output strictly and consistently using the following exact headings:
+                
+                ### 1. STUDENT WORK SUMMARY
+                [Concise transcription of handwritten calculations and steps]
+                
+                ### 2. ITEMIZED SCORECARD
+                | Component | Points Possible | Points Earned | Deduction Details |
+                |---|---|---|---|
+                [Row for each graded component]
+                
+                ### 3. TOTAL SCORE
+                **Score:** [Points Earned] / [Points Possible]
+                
+                ### 4. INSTRUCTOR FEEDBACK
+                [Clear feedback distinguishing mathematical errors vs. missing terminology/labels]
+
+                Finally, append a strict JSON block at the very end:
+                ```json
+                {{
+                  "student_id": "Extracted ID or 'Unspecified'",
+                  "points_earned": 8.5,
+                  "points_possible": 10.0,
+                  "feedback_summary": "1-2 sentence overview of slips or missing labels"
+                }}
+                ```
                 """
 
                 content_payload = []
@@ -367,7 +436,9 @@ else:
                         except Exception:
                             pass
 
-                    st.session_state["latest_eval"] = eval_text
+                    clean_display = re.sub(r"```json\s*\{.*?\}\s*```", "", eval_text, flags=re.DOTALL).strip()
+
+                    st.session_state["latest_eval"] = clean_display
                     st.session_state["current_student"] = extracted_id
                     st.session_state["current_score"] = score_val
 
@@ -377,13 +448,31 @@ else:
                 except Exception as e:
                     st.error(f"Evaluation error: {str(e)}")
 
-    # Evaluation Output & Reconciliation
+    # Evaluation Output, Download & Reconciliation
     if "latest_eval" in st.session_state:
         st.divider()
-        st.subheader(f"Evaluation Report: {st.session_state.get('current_student', 'Student')}")
+        st.subheader(f"Evaluation: {st.session_state.get('current_student', 'Student')}")
         
-        display_md = re.sub(r"```json\s*\{.*?\}\s*```", "", st.session_state["latest_eval"], flags=re.DOTALL)
-        st.markdown(display_md)
+        # Standardized Markdown Display
+        st.markdown(st.session_state["latest_eval"])
+
+        # Dedicated Copyable Text Block
+        st.markdown("##### Copyable Feedback Block")
+        st.text_area(
+            "Select all & copy directly into LMS / student notes:",
+            value=st.session_state["latest_eval"],
+            height=160,
+            key="copyable_feedback_area"
+        )
+
+        # Individual Student Report Download
+        student_file_content = f"# Evaluation Report: {st.session_state.get('current_student', 'Student')}\nScore: {st.session_state.get('current_score', '')}\nDate: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n{st.session_state['latest_eval']}"
+        st.download_button(
+            label="📥 Download Single Student Report (.txt)",
+            data=student_file_content.encode("utf-8"),
+            file_name=f"report_{st.session_state.get('current_student', 'student')}.txt",
+            mime="text/plain"
+        )
 
         st.divider()
         st.subheader("Reconcile & Append to Master Gradebook")
@@ -401,11 +490,11 @@ else:
                     "OrgDefinedId": confirmed_id,
                     "Score": confirmed_score,
                     "Flagged": "YES" if flag_for_review else "NO",
-                    "Feedback": display_md.strip(),
+                    "Full_Feedback": st.session_state["latest_eval"],
                     "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 })
                 
-                # Clear evaluated buffer
+                # Reset buffers
                 if curr_code in shared_sessions:
                     del shared_sessions[curr_code]
                 if "latest_eval" in st.session_state:
