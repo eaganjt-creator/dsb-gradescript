@@ -7,6 +7,7 @@ import random
 from datetime import datetime
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image
 import qrcode
 from google import genai
@@ -16,6 +17,19 @@ st.set_page_config(
     page_title="DSB GradeScript",
     page_icon="🎓",
     layout="wide"
+)
+
+# Active Browser WebSocket Keep-Alive (Prevents Idle Disconnects During Grading)
+components.html(
+    """
+    <script>
+    setInterval(function() {
+        window.dispatchEvent(new Event('resize'));
+    }, 45000);
+    </script>
+    """,
+    height=0,
+    width=0,
 )
 
 # Daniels School of Business Styling & Mobile Button Enlargement
@@ -112,7 +126,7 @@ if not api_key:
     st.error("Configuration Error: GEMINI_API_KEY is not defined in Streamlit Secrets.")
     st.stop()
 
-# Query param handling
+# Query parameter handling for automatic phone pairing
 query_mode = st.query_params.get("mode", "")
 query_session = st.query_params.get("session", "")
 default_mode_index = 1 if query_mode == "mobile" else 0
@@ -210,7 +224,8 @@ else:
         st.subheader("Mobile Link")
         st.metric(label="Pairing PIN", value=st.session_state.session_code)
         
-        base_app_url = st.secrets.get("APP_URL", "https://dsb-gradescript.streamlit.app")
+        # QR Code using your exact Streamlit URL
+        base_app_url = "https://dsb-gradescript.streamlit.app"
         pair_url = f"{base_app_url}/?mode=mobile&session={st.session_state.session_code}"
         
         qr = qrcode.QRCode(box_size=3, border=1)
