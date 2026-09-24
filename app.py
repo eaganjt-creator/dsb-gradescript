@@ -319,41 +319,46 @@ else:
     col1, col2 = st.columns([1, 1])
 
     with col1:
-        st.subheader("1. Problem, Rubric & Master Key")
-        exam_prompt = st.text_area(
-            "Exam Problem Statement",
-            value=st.session_state.get("saved_prompt", ""),
-            height=120,
-            placeholder="Enter problem statement, background context, or starting scenario..."
-        )
-        rubric_text = st.text_area(
-            "Itemized Rubric / Deduction Rules",
-            value=st.session_state.get("saved_rubric", ""),
-            height=180,
-            placeholder="""Define point breakdown and deduction rules:
-- Part A (4 pts): 2 pts for setup/formula, 2 pts for intermediate calculation.
-- Part B (4 pts): Proper identification of variables/labels and final value.
-- Part C (2 pts): Brief interpretation/rationale.
-- Deduction: -1 pt for missing units/labels even if numerical result matches."""
-        )
-        st.session_state["saved_prompt"] = exam_prompt
-        st.session_state["saved_rubric"] = rubric_text
+        st.subheader("1. Rubric & Master Key")
+        
+        st.info("💡 **Tip:** If your Master Answer Key PDF already details questions, answers, point values, and deduction notes, you can upload it below and leave the text boxes blank.")
 
-        st.markdown("##### Master Answer Key (Optional)")
+        st.markdown("##### Official Master Answer Key (PDF or Image)")
         if st.session_state.pinned_key_data is not None:
-            st.success(f"📌 **Pinned Key:** `{st.session_state.pinned_key_name}`")
-            if st.button("Clear Master Key"):
+            st.success(f"📌 **Pinned Master Key Active:** `{st.session_state.pinned_key_name}`")
+            if st.button("Clear / Replace Master Key"):
                 st.session_state.pinned_key_data = None
                 st.session_state.pinned_key_name = ""
                 st.session_state.pinned_key_type = ""
                 st.rerun()
         else:
-            key_file = st.file_uploader("Upload Solution Key (PDF or Image)", type=["pdf", "png", "jpg", "jpeg"])
+            key_file = st.file_uploader(
+                "Upload Master Solution Key", 
+                type=["pdf", "png", "jpg", "jpeg"],
+                help="Upload an annotated exam key containing questions, solutions, point distributions, or grading notes."
+            )
             if key_file:
                 st.session_state.pinned_key_data = key_file.read()
                 st.session_state.pinned_key_name = key_file.name
                 st.session_state.pinned_key_type = "pdf" if key_file.name.lower().endswith(".pdf") else "image"
                 st.rerun()
+
+        st.divider()
+
+        exam_prompt = st.text_area(
+            "Exam Problem Statement (Optional if included in Master Key)",
+            value=st.session_state.get("saved_prompt", ""),
+            height=90,
+            placeholder="Optional: Enter problem prompt or scenario context if not using an annotated key..."
+        )
+        rubric_text = st.text_area(
+            "Itemized Rubric / Deduction Rules (Optional if included in Master Key)",
+            value=st.session_state.get("saved_rubric", ""),
+            height=130,
+            placeholder="Optional: Define point distributions and penalty rules if not using an annotated key..."
+        )
+        st.session_state["saved_prompt"] = exam_prompt
+        st.session_state["saved_rubric"] = rubric_text
 
     with col2:
         st.subheader("2. Incoming Submissions Queue")
@@ -394,7 +399,7 @@ else:
     # Evaluation Execution Pipeline
     if run_eval and pages_to_grade:
         if not rubric_text and not st.session_state.pinned_key_data:
-            st.warning("Please provide a rubric or upload a master key.")
+            st.warning("Please upload a Master Solution Key or enter an itemized rubric.")
         else:
             with st.spinner("Deciphering handwriting, applying rubric, and standardizing evaluation..."):
                 client = genai.Client(api_key=api_key)
@@ -405,6 +410,7 @@ else:
                 
                 Grading Policy:
                 - Strictness Level: {strictness}
+                - Key Source: Rely on the provided Master Answer Key Document (including any explicit point allocations, totals, and carried-forward error rules marked on the pages) and/or the text rubric.
                 
                 You MUST format your output strictly and consistently using the following exact headings:
                 
@@ -445,13 +451,17 @@ else:
                 for page in pages_to_grade:
                     content_payload.append(page)
 
-                content_payload.append(f"""
-                === PROBLEM STATEMENT ===
-                {exam_prompt}
+                # Add text fields if provided; otherwise instruct the model to use the master key document
+                if exam_prompt.strip() or rubric_text.strip():
+                    content_payload.append(f"""
+                    === PROBLEM STATEMENT ===
+                    {exam_prompt if exam_prompt.strip() else 'Refer directly to Master Answer Key Document'}
 
-                === ITEMIZED RUBRIC & CRITERIA ===
-                {rubric_text}
-                """)
+                    === ITEMIZED RUBRIC & CRITERIA ===
+                    {rubric_text if rubric_text.strip() else 'Refer directly to Master Answer Key Document'}
+                    """)
+                else:
+                    content_payload.append("Note: Evaluate purely against the questions, answers, point totals, and grading notes in the Master Answer Key Document.")
 
                 try:
                     response = client.models.generate_content(
