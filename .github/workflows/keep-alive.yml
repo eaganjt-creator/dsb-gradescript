@@ -1,0 +1,15 @@
+name: Keep Streamlit App Awake
+
+on:
+  schedule:
+    # Runs at 12:00 UTC (8:00 AM EDT) every 2 days
+    - cron: '0 12 */2 * *'
+  workflow_dispatch: # Allows manual trigger from GitHub UI if ever needed
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Streamlit URL
+        run: |
+          curl -I -s https://dsb-gradescript.streamlit.app || true
