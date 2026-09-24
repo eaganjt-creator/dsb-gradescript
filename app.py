@@ -3,6 +3,7 @@ import io
 import json
 import re
 import time
+import base64
 import random
 from datetime import datetime
 import pandas as pd
@@ -43,7 +44,7 @@ st.markdown("""
     .main-header {
         border-bottom: 3px solid #C28E0E;
         padding-bottom: 8px;
-        margin-bottom: 20px;
+        margin-bottom: 12px;
     }
     .stButton>button {
         background-color: #000000;
@@ -57,7 +58,6 @@ st.markdown("""
         background-color: #C28E0E;
         color: #000000;
     }
-    /* Mobile-Specific Enhancements: Large tap targets for phone scanner */
     @media (max-width: 768px) {
         .stButton>button {
             width: 100% !important;
@@ -91,6 +91,28 @@ def optimize_image(image: Image.Image, max_dim: int = 1600) -> Image.Image:
         new_size = (int(width * scale), int(height * scale))
         image = image.resize(new_size, Image.Resampling.LANCZOS)
     return image
+
+def render_pdf_guide():
+    pdf_path = os.path.join(os.path.dirname(__file__), "USER_GUIDE.pdf")
+    if os.path.exists(pdf_path):
+        with open(pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+
+        st.download_button(
+            label="📥 Download Official User Guide (PDF)",
+            data=pdf_bytes,
+            file_name="DSB_GradeScript_User_Guide.pdf",
+            mime="application/pdf",
+            use_container_width=True
+        )
+
+        st.divider()
+
+        base64_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
+        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="650" type="application/pdf" style="border-radius: 6px; border: 1px solid #ccc;"></iframe>'
+        st.markdown(pdf_display, unsafe_allow_html=True)
+    else:
+        st.warning("`USER_GUIDE.pdf` was not found in the repository root. Please upload it to your GitHub repo.")
 
 # ----------------- ACCESS CONTROL GATE -----------------
 def check_password():
@@ -207,8 +229,13 @@ if device_mode == "📱 Mobile (Scanner Companion)":
 # 💻 LAPTOP COCKPIT MODE
 # ==============================================================================
 else:
-    st.markdown("<h1 class='main-header'>DSB GradeScript</h1>", unsafe_allow_html=True)
-    st.caption("Daniels School of Business | Multi-Page Handwritten Exam Cockpit")
+    head_col1, head_col2 = st.columns([3, 1])
+    with head_col1:
+        st.markdown("<h1 class='main-header'>DSB GradeScript</h1>", unsafe_allow_html=True)
+        st.caption("Daniels School of Business | Multi-Page Handwritten Exam Cockpit")
+    with head_col2:
+        with st.popover("📖 User Guide (PDF)", use_container_width=True):
+            render_pdf_guide()
 
     if "grading_log" not in st.session_state:
         st.session_state.grading_log = []
@@ -224,7 +251,6 @@ else:
         st.subheader("Mobile Link")
         st.metric(label="Pairing PIN", value=st.session_state.session_code)
         
-        # QR Code using your production Streamlit URL
         base_app_url = "https://dsb-gradescript.streamlit.app"
         pair_url = f"{base_app_url}/?mode=mobile&session={st.session_state.session_code}"
         
@@ -238,7 +264,6 @@ else:
         st.image(buf.getvalue(), caption="Scan with Phone Camera", width=140)
 
         st.divider()
-        # Universal scoring strictness options across all business disciplines
         strictness = st.selectbox(
             "Scoring Strictness",
             [
@@ -255,7 +280,6 @@ else:
             df_log = pd.DataFrame(st.session_state.grading_log)
             st.dataframe(df_log[["OrgDefinedId", "Score", "Flagged"]], hide_index=True)
             
-            # Export 1: Brightspace CSV
             csv_data = df_log[["OrgDefinedId", "Score", "Flagged", "Timestamp"]].to_csv(index=False).encode("utf-8")
             st.download_button(
                 label="📥 1. Gradebook CSV (LMS Import)",
@@ -265,7 +289,6 @@ else:
                 use_container_width=True
             )
             
-            # Export 2: Comprehensive All-Student Audit Report
             full_report_text = f"# DSB GradeScript - Session Evaluation Dossier\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
             for row in st.session_state.grading_log:
                 full_report_text += f"## Student: {row['OrgDefinedId']}\n"
@@ -287,6 +310,7 @@ else:
             st.caption("No submissions recorded yet.")
 
         st.divider()
+        st.caption("DSB GradeScript v1.2.0 | Daniels School of Business")
         if st.button("Log Out"):
             st.session_state.authenticated = False
             st.rerun()
@@ -334,7 +358,6 @@ else:
     with col2:
         st.subheader("2. Incoming Submissions Queue")
         
-        # Explicit refresh button to poll queue without touching dropdowns
         poll_col1, poll_col2 = st.columns([1, 1])
         with poll_col1:
             if st.button("🔄 Refresh Incoming Queue", use_container_width=True):
@@ -473,10 +496,8 @@ else:
         st.divider()
         st.subheader(f"Evaluation: {st.session_state.get('current_student', 'Student')}")
         
-        # Standardized Markdown Display
         st.markdown(st.session_state["latest_eval"])
 
-        # Dedicated Copyable Text Block
         st.markdown("##### Copyable Feedback Block")
         st.text_area(
             "Select all & copy directly into LMS / student notes:",
@@ -485,7 +506,6 @@ else:
             key="copyable_feedback_area"
         )
 
-        # Individual Student Report Download
         student_file_content = f"# Evaluation Report: {st.session_state.get('current_student', 'Student')}\nScore: {st.session_state.get('current_score', '')}\nDate: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n{st.session_state['latest_eval']}"
         st.download_button(
             label="📥 Download Single Student Report (.txt)",
@@ -514,7 +534,6 @@ else:
                     "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 })
                 
-                # Reset buffers
                 if curr_code in shared_sessions:
                     del shared_sessions[curr_code]
                 if "latest_eval" in st.session_state:
