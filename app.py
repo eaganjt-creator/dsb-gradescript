@@ -224,7 +224,7 @@ else:
         st.subheader("Mobile Link")
         st.metric(label="Pairing PIN", value=st.session_state.session_code)
         
-        # QR Code using your exact Streamlit URL
+        # QR Code using your production Streamlit URL
         base_app_url = "https://dsb-gradescript.streamlit.app"
         pair_url = f"{base_app_url}/?mode=mobile&session={st.session_state.session_code}"
         
@@ -238,12 +238,13 @@ else:
         st.image(buf.getvalue(), caption="Scan with Phone Camera", width=140)
 
         st.divider()
+        # Universal scoring strictness options across all business disciplines
         strictness = st.selectbox(
             "Scoring Strictness",
             [
-                "Strict (Penalize missing account/tax labels & omitted units)",
-                "Standard (Deduct for numerical error; minor deduction for label format)",
-                "Lenient (Focus primarily on mathematical accuracy)"
+                "Strict (Penalize missing intermediate steps, labels & units)",
+                "Standard (Deduct for numerical error; minor deduction for formatting/units)",
+                "Lenient (Focus primarily on mathematical/final answer accuracy)"
             ]
         )
         flag_for_review = st.checkbox("🚩 Flag Current for Faculty Review", value=False)
@@ -299,13 +300,17 @@ else:
             "Exam Problem Statement",
             value=st.session_state.get("saved_prompt", ""),
             height=120,
-            placeholder="Enter problem context, trial balance, or prompt..."
+            placeholder="Enter problem statement, background context, or starting scenario..."
         )
         rubric_text = st.text_area(
             "Itemized Rubric / Deduction Rules",
             value=st.session_state.get("saved_rubric", ""),
             height=180,
-            placeholder="Define point breakdown and deduction rules..."
+            placeholder="""Define point breakdown and deduction rules:
+- Part A (4 pts): 2 pts for setup/formula, 2 pts for intermediate calculation.
+- Part B (4 pts): Proper identification of variables/labels and final value.
+- Part C (2 pts): Brief interpretation/rationale.
+- Deduction: -1 pt for missing units/labels even if numerical result matches."""
         )
         st.session_state["saved_prompt"] = exam_prompt
         st.session_state["saved_rubric"] = rubric_text
@@ -381,7 +386,7 @@ else:
                 You MUST format your output strictly and consistently using the following exact headings:
                 
                 ### 1. STUDENT WORK SUMMARY
-                [Concise transcription of handwritten calculations and steps]
+                [Concise transcription of handwritten calculations, intermediate steps, and reasoning]
                 
                 ### 2. ITEMIZED SCORECARD
                 | Component | Points Possible | Points Earned | Deduction Details |
@@ -392,7 +397,7 @@ else:
                 **Score:** [Points Earned] / [Points Possible]
                 
                 ### 4. INSTRUCTOR FEEDBACK
-                [Clear feedback distinguishing mathematical errors vs. missing terminology/labels]
+                [Clear feedback distinguishing mathematical errors vs. missing labels, units, or terminology]
 
                 Finally, append a strict JSON block at the very end:
                 ```json
