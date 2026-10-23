@@ -162,9 +162,8 @@ def generate_content_with_retry(client, model_name, contents, config, max_retrie
             is_transient = any(code in err_str for code in ["503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "HIGH DEMAND"])
             
             if is_transient and attempt < max_retries:
-                # Add jitter (0.2s - 0.8s) to avoid harmonic retries
                 sleep_duration = (base_delay ** attempt) + random.uniform(0.2, 0.8)
-                msg = f"⏳ Google API reports high demand (503/429). Retrying in {sleep_duration:.1f}s (Attempt {attempt} of {max_retries})..."
+                msg = f"⏳ Upstream service load encountered. Retrying in {sleep_duration:.1f}s (Attempt {attempt} of {max_retries})..."
                 if status_container:
                     status_container.info(msg)
                 time.sleep(sleep_duration)
@@ -361,7 +360,7 @@ else:
                 help="Upload an annotated exam key containing questions, solutions, point distributions, or grading notes."
             )
             if key_file:
-                st.session_state.pinned_key_data = key_file.read()
+                st.session_state.pinned_key_data = key_file.getvalue()
                 st.session_state.pinned_key_name = key_file.name
                 st.session_state.pinned_key_type = "pdf" if key_file.name.lower().endswith(".pdf") else "image"
                 st.rerun()
@@ -414,7 +413,9 @@ else:
             run_eval = False
             if manual_file:
                 if manual_file.name.lower().endswith(".pdf"):
-                    pages_to_grade = [types.Part.from_bytes(data=manual_file.read(), mime_type="application/pdf")]
+                    # Use getvalue() to reliably extract all bytes for the Part object
+                    pdf_bytes = manual_file.getvalue()
+                    pages_to_grade = [types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")]
                 else:
                     pages_to_grade = [optimize_image(Image.open(manual_file))]
                 run_eval = st.button("Evaluate Manual Upload", use_container_width=True)
@@ -487,14 +488,15 @@ else:
                     content_payload.append("Note: Evaluate purely against the questions, answers, point totals, and grading notes in the Master Answer Key Document.")
 
                 try:
-                    # Execute with automatic exponential backoff retry handler
+                    # Execute with automatic exponential backoff retry handler and expanded token ceiling
                     response = generate_content_with_retry(
                         client=client,
                         model_name=MODEL_NAME,
                         contents=content_payload,
                         config=types.GenerateContentConfig(
                             system_instruction=system_instruction,
-                            temperature=0.1
+                            temperature=0.1,
+                            max_output_tokens=8192
                         ),
                         max_retries=4,
                         base_delay=2.0,
