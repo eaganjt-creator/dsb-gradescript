@@ -5,7 +5,9 @@ import re
 import time
 import base64
 import random
+import threading
 from datetime import datetime
+import requests
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
@@ -20,7 +22,29 @@ st.set_page_config(
     layout="wide"
 )
 
-# Active Browser WebSocket Keep-Alive (Prevents Idle Disconnects During Grading)
+# ----------------- CONTAINER KEEP-ALIVE DAEMON -----------------
+@st.cache_resource
+def start_keep_alive_daemon(app_url: str = "https://dsb-gradescript.streamlit.app"):
+    """
+    Spawns a persistent background daemon thread that pings the application endpoint
+    every 12 minutes, preventing Streamlit Community Cloud from putting the container to sleep.
+    """
+    def ping_worker():
+        while True:
+            time.sleep(720)  # Ping every 12 minutes
+            try:
+                requests.head(app_url, timeout=10)
+            except Exception:
+                pass
+
+    worker_thread = threading.Thread(target=ping_worker, daemon=True)
+    worker_thread.start()
+    return True
+
+start_keep_alive_daemon()
+# ---------------------------------------------------------------
+
+# Active Browser WebSocket Keep-Alive (Prevents Idle Disconnects During Active Grading)
 components.html(
     """
     <script>
@@ -413,7 +437,6 @@ else:
             run_eval = False
             if manual_file:
                 if manual_file.name.lower().endswith(".pdf"):
-                    # Use getvalue() to reliably extract all bytes for the Part object
                     pdf_bytes = manual_file.getvalue()
                     pages_to_grade = [types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")]
                 else:
@@ -488,7 +511,6 @@ else:
                     content_payload.append("Note: Evaluate purely against the questions, answers, point totals, and grading notes in the Master Answer Key Document.")
 
                 try:
-                    # Execute with automatic exponential backoff retry handler and expanded token ceiling
                     response = generate_content_with_retry(
                         client=client,
                         model_name=MODEL_NAME,
