@@ -141,12 +141,35 @@ if not check_password():
     st.stop()
 # --------------------------------------------------------
 
-MODEL_NAME = "gemini-3.6-flash"
+MODEL_NAME = "gemini-2.5-flash"
 api_key = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", ""))
 
 if not api_key:
     st.error("Configuration Error: GEMINI_API_KEY is not defined in Streamlit Secrets.")
     st.stop()
+
+# Robust call wrapper with exponential backoff & jitter for 503 / 429 spikes
+def generate_content_with_retry(client, model_name, contents, config, max_retries=4, base_delay=2.0, status_container=None):
+    for attempt in range(1, max_retries + 1):
+        try:
+            return client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=config
+            )
+        except Exception as e:
+            err_str = str(e).upper()
+            is_transient = any(code in err_str for code in ["503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "HIGH DEMAND"])
+            
+            if is_transient and attempt < max_retries:
+                # Add jitter (0.2s - 0.8s) to avoid harmonic retries
+                sleep_duration = (base_delay ** attempt) + random.uniform(0.2, 0.8)
+                msg = f"⏳ Google API reports high demand (503/429). Retrying in {sleep_duration:.1f}s (Attempt {attempt} of {max_retries})..."
+                if status_container:
+                    status_container.info(msg)
+                time.sleep(sleep_duration)
+            else:
+                raise e
 
 # Query parameter handling for automatic phone pairing
 query_mode = st.query_params.get("mode", "")
@@ -401,6 +424,7 @@ else:
         if not rubric_text and not st.session_state.pinned_key_data:
             st.warning("Please upload a Master Solution Key or enter an itemized rubric.")
         else:
+            status_box = st.empty()
             with st.spinner("Deciphering handwriting, applying rubric, and standardizing evaluation..."):
                 client = genai.Client(api_key=api_key)
 
@@ -451,7 +475,6 @@ else:
                 for page in pages_to_grade:
                     content_payload.append(page)
 
-                # Add text fields if provided; otherwise instruct the model to use the master key document
                 if exam_prompt.strip() or rubric_text.strip():
                     content_payload.append(f"""
                     === PROBLEM STATEMENT ===
@@ -464,14 +487,20 @@ else:
                     content_payload.append("Note: Evaluate purely against the questions, answers, point totals, and grading notes in the Master Answer Key Document.")
 
                 try:
-                    response = client.models.generate_content(
-                        model=MODEL_NAME,
+                    # Execute with automatic exponential backoff retry handler
+                    response = generate_content_with_retry(
+                        client=client,
+                        model_name=MODEL_NAME,
                         contents=content_payload,
                         config=types.GenerateContentConfig(
                             system_instruction=system_instruction,
                             temperature=0.1
-                        )
+                        ),
+                        max_retries=4,
+                        base_delay=2.0,
+                        status_container=status_box
                     )
+                    status_box.empty()
 
                     eval_text = response.text
                     extracted_id = incoming_student if incoming_student else "Unspecified"
@@ -499,6 +528,7 @@ else:
                         shared_sessions[curr_code]["processed"] = True
 
                 except Exception as e:
+                    status_box.empty()
                     st.error(f"Evaluation error: {str(e)}")
 
     # Evaluation Output, Download & Reconciliation
