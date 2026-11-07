@@ -409,42 +409,191 @@ else:
     with col2:
         st.subheader("2. Incoming Submissions Queue")
         
-        poll_col1, poll_col2 = st.columns([1, 1])
-        with poll_col1:
-            if st.button("🔄 Refresh Incoming Queue", use_container_width=True):
-                st.rerun()
-
-        curr_code = st.session_state.session_code
-        mobile_data = shared_sessions.get(curr_code)
+        upload_mode = st.radio(
+            "Ingestion Flow",
+            ["Single Submission (Live / Mobile Companion)", "Batch / Multi-File Ingestion (Bulk Upload)"],
+            horizontal=True
+        )
 
         pages_to_grade = []
         incoming_student = ""
+        run_single_eval = False
 
-        if mobile_data and not mobile_data.get("processed", False):
-            incoming_student = mobile_data.get("student_id", "")
-            pages_to_grade = mobile_data.get("pages", [])
-            st.success(f"📥 Received {len(pages_to_grade)} page(s) from phone! (Student: {incoming_student or 'Detecting...'})")
-            
-            p_cols = st.columns(min(len(pages_to_grade), 3))
-            for i, p_img in enumerate(pages_to_grade):
-                p_cols[i % 3].image(p_img, caption=f"Page {i+1}", use_container_width=True)
+        if upload_mode == "Single Submission (Live / Mobile Companion)":
+            poll_col1, poll_col2 = st.columns([1, 1])
+            with poll_col1:
+                if st.button("🔄 Refresh Incoming Queue", use_container_width=True):
+                    st.rerun()
 
-            run_eval = st.button("🚀 Evaluate Submission", use_container_width=True)
+            curr_code = st.session_state.session_code
+            mobile_data = shared_sessions.get(curr_code)
+
+            if mobile_data and not mobile_data.get("processed", False):
+                incoming_student = mobile_data.get("student_id", "")
+                pages_to_grade = mobile_data.get("pages", [])
+                st.success(f"📥 Received {len(pages_to_grade)} page(s) from phone! (Student: {incoming_student or 'Detecting...'})")
+                
+                p_cols = st.columns(min(len(pages_to_grade), 3))
+                for i, p_img in enumerate(pages_to_grade):
+                    p_cols[i % 3].image(p_img, caption=f"Page {i+1}", use_container_width=True)
+
+                run_single_eval = st.button("🚀 Evaluate Submission", use_container_width=True)
+            else:
+                st.info(f"Waiting for mobile companion (PIN: **{curr_code}**)...")
+                st.caption("Or upload a local PDF/Images directly below:")
+                manual_file = st.file_uploader("Manual Single Exam Upload", type=["pdf", "png", "jpg", "jpeg"], key="manual_up")
+                if manual_file:
+                    if manual_file.name.lower().endswith(".pdf"):
+                        pdf_bytes = manual_file.getvalue()
+                        pages_to_grade = [types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")]
+                    else:
+                        pages_to_grade = [optimize_image(Image.open(manual_file))]
+                    incoming_student = os.path.splitext(manual_file.name)[0]
+                    run_single_eval = st.button("Evaluate Manual Upload", use_container_width=True)
+
         else:
-            st.info(f"Waiting for mobile companion (PIN: **{curr_code}**)...")
-            st.caption("Or upload a local PDF/Images directly below:")
-            manual_file = st.file_uploader("Manual File Upload", type=["pdf", "png", "jpg", "jpeg"], key="manual_up")
-            run_eval = False
-            if manual_file:
-                if manual_file.name.lower().endswith(".pdf"):
-                    pdf_bytes = manual_file.getvalue()
-                    pages_to_grade = [types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")]
-                else:
-                    pages_to_grade = [optimize_image(Image.open(manual_file))]
-                run_eval = st.button("Evaluate Manual Upload", use_container_width=True)
+            # ================= BULK / MULTI-FILE PIPELINE =================
+            st.caption("Upload multiple student exam PDFs or image scans to grade them in a continuous sequence.")
+            batch_files = st.file_uploader(
+                "Select Multiple Student Files",
+                type=["pdf", "png", "jpg", "jpeg"],
+                accept_multiple_files=True,
+                key="batch_files_up"
+            )
 
-    # Evaluation Execution Pipeline
-    if run_eval and pages_to_grade:
+            if batch_files:
+                st.write(f"📁 **{len(batch_files)} file(s) queued for batch grading.**")
+                if st.button(f"🚀 Begin Batch Evaluation ({len(batch_files)} Files)", use_container_width=True):
+                    if not rubric_text and not st.session_state.pinned_key_data:
+                        st.warning("Please upload a Master Solution Key or enter a rubric before starting the batch.")
+                    else:
+                        progress_bar = st.progress(0)
+                        batch_status = st.empty()
+                        client = genai.Client(api_key=api_key)
+
+                        system_instruction = f"""
+                        You are DSB GradeScript, an objective, rigorous exam evaluator for the Daniels School of Business.
+                        Evaluate this multi-page handwritten student exam.
+                        
+                        Grading Policy:
+                        - Strictness Level: {strictness}
+                        - Key Source: Rely on the provided Master Answer Key Document (including any explicit point allocations, totals, and carried-forward error rules marked on the pages) and/or the text rubric.
+                        
+                        You MUST format your output strictly and consistently using the following exact headings:
+                        
+                        ### 1. STUDENT WORK SUMMARY
+                        [Concise transcription of handwritten calculations, intermediate steps, and reasoning]
+                        
+                        ### 2. ITEMIZED SCORECARD
+                        | Component | Points Possible | Points Earned | Deduction Details |
+                        |---|---|---|---|
+                        [Row for each graded component]
+                        
+                        ### 3. TOTAL SCORE
+                        **Score:** [Points Earned] / [Points Possible]
+                        
+                        ### 4. INSTRUCTOR FEEDBACK
+                        [Clear feedback distinguishing mathematical errors vs. missing labels, units, or terminology]
+
+                        Finally, append a strict JSON block at the very end:
+                        ```json
+                        {{
+                          "student_id": "Extracted ID or 'Unspecified'",
+                          "points_earned": 8.5,
+                          "points_possible": 10.0,
+                          "feedback_summary": "1-2 sentence overview of slips or missing labels"
+                        }}
+                        ```
+                        """
+
+                        for idx, b_file in enumerate(batch_files):
+                            batch_status.info(f"Grading submission {idx + 1} of {len(batch_files)}: `{b_file.name}`...")
+                            
+                            if b_file.name.lower().endswith(".pdf"):
+                                b_pages = [types.Part.from_bytes(data=b_file.getvalue(), mime_type="application/pdf")]
+                            else:
+                                b_pages = [optimize_image(Image.open(b_file))]
+
+                            b_payload = []
+                            if st.session_state.pinned_key_data is not None:
+                                b_payload.append("=== MASTER ANSWER KEY DOCUMENT ===")
+                                if st.session_state.pinned_key_type == "pdf":
+                                    b_payload.append(types.Part.from_bytes(data=st.session_state.pinned_key_data, mime_type="application/pdf"))
+                                else:
+                                    b_payload.append(optimize_image(Image.open(io.BytesIO(st.session_state.pinned_key_data))))
+
+                            b_payload.append("=== STUDENT SUBMISSION ===")
+                            for p in b_pages:
+                                b_payload.append(p)
+
+                            if exam_prompt.strip() or rubric_text.strip():
+                                b_payload.append(f"""
+                                === PROBLEM STATEMENT ===
+                                {exam_prompt if exam_prompt.strip() else 'Refer directly to Master Answer Key Document'}
+
+                                === ITEMIZED RUBRIC & CRITERIA ===
+                                {rubric_text if rubric_text.strip() else 'Refer directly to Master Answer Key Document'}
+                                """)
+                            else:
+                                b_payload.append("Note: Evaluate purely against the questions, answers, point totals, and grading notes in the Master Answer Key Document.")
+
+                            try:
+                                resp = generate_content_with_retry(
+                                    client=client,
+                                    model_name=MODEL_NAME,
+                                    contents=b_payload,
+                                    config=types.GenerateContentConfig(
+                                        system_instruction=system_instruction,
+                                        temperature=0.1,
+                                        max_output_tokens=8192
+                                    ),
+                                    max_retries=4,
+                                    base_delay=2.0
+                                )
+
+                                eval_text = resp.text
+                                fallback_id = os.path.splitext(b_file.name)[0]
+                                extracted_id = fallback_id
+                                score_val = ""
+
+                                json_match = re.search(r"```json\s*(\{.*?\})\s*```", eval_text, re.DOTALL)
+                                if json_match:
+                                    try:
+                                        parsed = json.loads(json_match.group(1))
+                                        if parsed.get("student_id") not in ("Unspecified", "", None):
+                                            extracted_id = str(parsed.get("student_id"))
+                                        e = parsed.get("points_earned", "")
+                                        p = parsed.get("points_possible", "")
+                                        score_val = f"{e}/{p}" if e != "" and p != "" else str(e)
+                                    except Exception:
+                                        pass
+
+                                clean_eval = re.sub(r"```json\s*\{.*?\}\s*```", "", eval_text, flags=re.DOTALL).strip()
+
+                                st.session_state.grading_log.append({
+                                    "OrgDefinedId": extracted_id,
+                                    "Score": score_val,
+                                    "Flagged": "NO",
+                                    "Full_Feedback": clean_eval,
+                                    "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                })
+
+                            except Exception as ex:
+                                st.session_state.grading_log.append({
+                                    "OrgDefinedId": os.path.splitext(b_file.name)[0],
+                                    "Score": "ERR",
+                                    "Flagged": "YES",
+                                    "Full_Feedback": f"Evaluation error: {str(ex)}",
+                                    "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                })
+
+                            progress_bar.progress((idx + 1) / len(batch_files))
+
+                        batch_status.success(f"✅ Completed batch processing of {len(batch_files)} exams! Files logged to sidebar.")
+                        st.rerun()
+
+    # ================= SINGLE EVALUATION PIPELINE =================
+    if run_single_eval and pages_to_grade:
         if not rubric_text and not st.session_state.pinned_key_data:
             st.warning("Please upload a Master Solution Key or enter an itemized rubric.")
         else:
@@ -534,7 +683,7 @@ else:
                     if json_match:
                         try:
                             parsed = json.loads(json_match.group(1))
-                            if not incoming_student and parsed.get("student_id") not in ("Unspecified", ""):
+                            if (not incoming_student or incoming_student.startswith("Manual")) and parsed.get("student_id") not in ("Unspecified", ""):
                                 extracted_id = str(parsed.get("student_id"))
                             e = parsed.get("points_earned", "")
                             p = parsed.get("points_possible", "")
@@ -548,6 +697,7 @@ else:
                     st.session_state["current_student"] = extracted_id
                     st.session_state["current_score"] = score_val
 
+                    curr_code = st.session_state.session_code
                     if curr_code in shared_sessions:
                         shared_sessions[curr_code]["processed"] = True
 
@@ -555,7 +705,7 @@ else:
                     status_box.empty()
                     st.error(f"Evaluation error: {str(e)}")
 
-    # Evaluation Output, Download & Reconciliation
+    # Evaluation Output, Download & Reconciliation (For Single Flow)
     if "latest_eval" in st.session_state:
         st.divider()
         st.subheader(f"Evaluation: {st.session_state.get('current_student', 'Student')}")
@@ -598,6 +748,7 @@ else:
                     "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 })
                 
+                curr_code = st.session_state.session_code
                 if curr_code in shared_sessions:
                     del shared_sessions[curr_code]
                 if "latest_eval" in st.session_state:
